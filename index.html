@@ -1,0 +1,1707 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Từ Vựng DNA - Hệ Thống Luyện Phản Xạ Ngôn Ngữ Học</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Plus Jakarta Sans', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @keyframes dnaHelix {
+            0% { transform: translateY(-6px) scale(0.9); opacity: 0.5; }
+            100% { transform: translateY(6px) scale(1.1); opacity: 1; }
+        }
+        .dna-node-anim {
+            animation: dnaHelix 1.5s ease-in-out infinite alternate;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.6);
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(99, 102, 241, 0.4);
+            border-radius: 99px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: rgba(99, 102, 241, 0.6);
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans selection:bg-indigo-500/30 selection:text-indigo-200 overflow-x-hidden relative">
+
+    <div class="absolute inset-0 overflow-hidden pointer-events-none opacity-20 z-0">
+        <div class="absolute top-1/4 left-5 w-96 h-96 rounded-full bg-indigo-600/20 blur-[130px]"></div>
+        <div class="absolute bottom-1/4 right-5 w-96 h-96 rounded-full bg-cyan-600/20 blur-[130px]"></div>
+    </div>
+
+    <!-- MAIN APP WRAPPER -->
+    <div id="app" class="relative z-10 flex flex-col min-h-screen"></div>
+
+    <!-- React and Babel via CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // Backend Flask giữ API key Gemini, frontend chỉ gọi qua đây
+        const BACKEND_URL = "http://127.0.0.1:5000";
+
+        async function callBackend(endpoint, body) {
+            const response = await fetch(`${BACKEND_URL}${endpoint}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!response.ok) {
+                let message = `Lỗi backend (${response.status})`;
+                try {
+                    const errBody = await response.json();
+                    if (errBody?.error) message = errBody.error;
+                } catch (_e) { /* body không phải JSON */ }
+                throw new Error(message);
+            }
+
+            return response.json();
+        }
+
+        // Base form lemmatization algorithm (Locally)
+        const getBaseFormLocally = (word) => {
+            let w = word.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g, "");
+            if (!w) return "";
+            
+            // Plurals
+            if (w.endsWith("ies")) return w.slice(0, -3) + "y"; // activities -> activity
+            if (w.endsWith("es")) {
+                if (w.endsWith("ches") || w.endsWith("shes") || w.endsWith("xes") || w.endsWith("ses")) {
+                    return w.slice(0, -2);
+                }
+                return w.slice(0, -1);
+            }
+            if (w.endsWith("s") && !w.endsWith("ss") && !w.endsWith("us") && !w.endsWith("is") && !w.endsWith("as")) {
+                return w.slice(0, -1);
+            }
+
+            // Gerunds (V-ing)
+            if (w.endsWith("ing")) {
+                if (w.length > 5 && w[w.length - 4] === w[w.length - 5]) {
+                    return w.slice(0, -4); // running -> run
+                }
+                const base = w.slice(0, -3);
+                // Check common silent-e patterns
+                if (base.endsWith("at") || base.endsWith("lov") || base.endsWith("us") || base.endsWith("quir") || base.endsWith("id") || base.endsWith("sav")) {
+                    return base + "e"; // acquiring -> acquire, loving -> love
+                }
+                return base;
+            }
+
+            // Past participles (V-ed)
+            if (w.endsWith("ed")) {
+                if (w.endsWith("ied")) return w.slice(0, -3) + "y"; // studied -> study
+                if (w.endsWith("ved") || w.endsWith("ced") || w.endsWith("sed") || w.endsWith("ted") || w.endsWith("red") || w.endsWith("ned")) {
+                    return w.slice(0, -1); // loved -> love, reduced -> reduce
+                }
+                return w.slice(0, -2); // played -> play
+            }
+            return w;
+        };
+
+        // Recover full word if bôi thiếu based on visible context
+        const recoverFullWordFromContext = (substring) => {
+            const cleanSub = substring.toLowerCase().trim();
+            if (!cleanSub || cleanSub.length < 2) return substring;
+            const bodyText = document.body.innerText || "";
+            const words = bodyText.split(/[^a-zA-Z]+/);
+            for (let word of words) {
+                const cleanWord = word.toLowerCase();
+                if (cleanWord.includes(cleanSub) && cleanWord.length > cleanSub.length) {
+                    return word;
+                }
+            }
+            return substring;
+        };
+
+        // Standard Default DNA database for "love"
+        const DEFAULT_WORD_DNA = {
+            word: "love",
+            evolution_path: [
+                { level: 1, stars: 1, en: "I love you.", vi: "Tôi yêu bạn.", words_count: 3, evolution_note: "Cấu trúc cơ bản nhất (Chủ ngữ + Động từ + Tân ngữ)" },
+                { level: 2, stars: 1, en: "She loves dogs.", vi: "Cô ấy yêu những chú chó.", words_count: 3, evolution_note: "Chia động từ s/es theo ngôi thứ ba số ít (She loves)" },
+                { level: 3, stars: 2, en: "They love reading books.", vi: "Họ thích đọc sách.", words_count: 4, evolution_note: "Cấu trúc Love + V-ing biểu đạt sở thích lâu dài" },
+                { level: 4, stars: 2, en: "He loves to travel alone.", vi: "Anh ấy thích đi du lịch một mình.", words_count: 5, evolution_note: "Love + To-Verb diễn tả một ý định hành động cụ thể" },
+                { level: 5, stars: 3, en: "They fell in love quickly.", vi: "Họ đã phải lòng nhau nhanh chóng.", words_count: 5, evolution_note: "Sử dụng cụm động từ ở quá khứ (fell in love)" },
+                { level: 6, stars: 3, en: "Her love for music is great.", vi: "Tình yêu cô ấy dành cho âm nhạc thật lớn lao.", words_count: 6, evolution_note: "Chuyển từ loại 'love' thành Danh từ làm chủ ngữ" },
+                { level: 7, stars: 4, en: "I would love to invite you.", vi: "Tôi rất mong muốn được mời bạn.", words_count: 6, evolution_note: "Dùng cụm trang trọng 'would love to' thể hiện ước muốn lịch sự" },
+                { level: 8, stars: 4, en: "I love the way she smiles.", vi: "Tôi yêu cái cách cô ấy mỉm cười.", words_count: 6, evolution_note: "Sử dụng mệnh đề quan hệ rút gọn làm tân ngữ (the way she...)" },
+                { level: 9, stars: 5, en: "He loved her with all his heart.", vi: "Anh ấy đã yêu cô ấy bằng cả trái tim.", words_count: 7, evolution_note: "Thêm cụm giới từ chỉ mức độ (with all his heart)" },
+                { level: 10, stars: 5, en: "I fell in love with her at first sight.", vi: "Tôi đã phải lòng cô ấy ngay từ cái nhìn đầu tiên.", words_count: 9, evolution_note: "Kết hợp thành ngữ phức nâng cao (fall in love with someone at first sight)" }
+            ],
+            exercises: [
+                { id: 1, ref_id: 1, vi_prompt: "Tôi yêu cậu ấy.", evolution_note: "you -> him (đại từ khác)", correct_en: "I love him.", hints: ["Dựa trên câu ví dụ #1: I love you.", "Đổi tân ngữ 'you' thành 'him' (cậu ấy).", "Viết đúng chuẩn: I love him."] },
+                { id: 2, ref_id: 2, vi_prompt: "Cô ấy yêu anh ấy.", evolution_note: "đổi chủ ngữ + tân ngữ, chia động từ", correct_en: "She loves him.", hints: ["Dựa trên câu ví dụ #2: She loves dogs.", "Đổi 'dogs' thành 'him'.", "Chú ý giữ nguyên đuôi chia 's' ở động từ chính: She loves him."] },
+                { id: 3, ref_id: 3, vi_prompt: "Họ thích chơi bóng đá.", evolution_note: "reading books -> playing soccer", correct_en: "They love playing soccer.", hints: ["Dựa trên câu ví dụ #3: They love reading books.", "Đổi hoạt động 'reading books' sang dạng V-ing 'playing soccer'.", "Kết hợp: They love playing soccer."] },
+                { id: 4, ref_id: 4, vi_prompt: "Cô ấy thích đi mua sắm một mình.", evolution_note: "He -> She; travel -> go shopping", correct_en: "She loves to go shopping alone.", hints: ["Dựa trên câu ví dụ #4: He loves to travel alone.", "Đổi sang chủ ngữ 'She' (vẫn chia động từ) và hoạt động 'to go shopping'.", "Câu hoàn chỉnh: She loves to go shopping alone."] },
+                { id: 5, ref_id: 5, vi_prompt: "Họ đã phải lòng nhau ngày hôm qua.", evolution_note: "quickly -> yesterday", correct_en: "They fell in love yesterday.", hints: ["Dựa trên câu ví dụ #5: They fell in love quickly.", "Thay trạng từ 'quickly' bằng trạng từ thời gian 'yesterday'.", "Giữ nguyên thì quá khứ của động từ fall: They fell in love yesterday."] },
+                { id: 6, ref_id: 6, vi_prompt: "Tình yêu của anh ấy dành cho cô ấy thật lớn lao.", evolution_note: "Her -> His; music -> her", correct_en: "His love for her is great.", hints: ["Dựa trên câu ví dụ #6: Her love for music is great.", "Đổi tính từ sở hữu sang 'His' và giới từ chỉ đối tượng 'for her'.", "Viết chuẩn: His love for her is great."] },
+                { id: 7, ref_id: 7, vi_prompt: "Tôi rất mong muốn được giúp đỡ bạn.", evolution_note: "invite you -> help you", correct_en: "I would love to help you.", hints: ["Dựa trên câu ví dụ #7: I would love to invite you.", "Giữ nguyên cấu trúc 'I would love to', thay đổi động từ hành động thành 'help'.", "Đáp án là: I would love to help you."] },
+                { id: 8, ref_id: 8, vi_prompt: "Tôi thích cách cô ấy nói chuyện.", evolution_note: "she smiles -> she talks", correct_en: "I love the way she talks.", hints: ["Dựa trên câu ví dụ #8: I love the way she smiles.", "Đổi mệnh đề phía sau thành 'she talks' (chia s ở talks).", "Câu hoàn thiện: I love the way she talks."] },
+                { id: 9, ref_id: 9, vi_prompt: "Cô ấy đã yêu anh ấy bằng cả tâm hồn mình.", evolution_note: "He -> She; her -> him; heart -> soul", correct_en: "She loved him with all her soul.", hints: ["Dựa trên câu ví dụ #9: He loved her with all his heart.", "Đổi đại từ phù hợp và đổi danh từ tặng cùng thành 'soul' / 'her soul'.", "Đáp án hoàn chỉnh: She loved him with all her soul."] },
+                { id: 10, ref_id: 10, vi_prompt: "Anh ấy đã yêu cô ấy ngay từ cái nhìn đầu tiên.", evolution_note: "I -> He", correct_en: "He fell in love with her at first sight.", hints: ["Dựa trên câu ví dụ #10: I fell in love with her at first sight.", "Chỉ đổi chủ ngữ 'I' thành 'He', cụm động từ quá khứ 'fell in love with' không thay đổi.", "Kết quả: He fell in love with her at first sight."] }
+            ],
+            patterns: [
+                {
+                    title: "Ngôi Thứ Ba Số Ít (Simple Present)",
+                    desc: "Khi dùng 'love' ở dạng động từ với chủ từ He / She / It hoặc tên riêng, bắt buộc phải thêm đuôi 's'.",
+                    example: "She loves English. (Đúng) vs She love English. (Sai)"
+                }
+            ]
+        };
+
+        function App() {
+            const [currentWord, setCurrentWord] = useState("love");
+            const [searchInput, setSearchInput] = useState("");
+            const [wordData, setWordData] = useState(DEFAULT_WORD_DNA);
+            const [activeStep, setActiveStep] = useState('setup');
+            const [lastLearningStep, setLastLearningStep] = useState('setup');
+
+            // DNA extra generation states
+            const [extraCount, setExtraCount] = useState(5);
+            const [isGeneratingExtra, setIsGeneratingExtra] = useState(false);
+            
+            // Learning dynamic tracking
+            const [listenedLevels, setListenedLevels] = useState({});
+            const [currentExerciseIndex, setCurrentExerciseIndex] = useState(0);
+            const [userTranslation, setUserTranslation] = useState("");
+            const [hintLevel, setHintLevel] = useState(0);
+            const [exerciseStatus, setExerciseStatus] = useState('unsolved');
+            const [scoreMetrics, setScoreMetrics] = useState({ correctFirstTry: 0, totalAttempts: 0, hintsUsed: 0 });
+            const [attemptsThisQuestion, setAttemptsThisQuestion] = useState(0);
+            const [patternShow, setPatternShow] = useState(false);
+            
+            // Custom Writing Production test states
+            const [productionSentence, setProductionSentence] = useState("");
+            const [isAiEvaluating, setIsAiEvaluating] = useState(false);
+            const [aiFeedback, setAiFeedback] = useState(null);
+
+            // General decoding loading screen
+            const [isDnaDecoding, setIsDnaDecoding] = useState(false);
+            const [dnaDecodeProgress, setDnaDecodeProgress] = useState(0);
+            const [decodingStatusText, setDecodingStatusText] = useState("");
+
+            const [library, setLibrary] = useState(() => {
+                const saved = localStorage.getItem('dna_vocab_library_v4');
+                if (saved) return JSON.parse(saved);
+                return [
+                    { word: "love", studyCount: 3 },
+                    { word: "mind", studyCount: 1 },
+                    { word: "sharp", studyCount: 0 },
+                    { word: "focus", studyCount: 2 },
+                    { word: "beautiful", studyCount: 0 }
+                ];
+            });
+
+            // Text Selection Popup Management
+            const [selectedText, setSelectedText] = useState("");
+            const [selectionCoords, setSelectionCoords] = useState({ top: 0, left: 0 });
+            const [notification, setNotification] = useState("");
+            const [isVerifyingWord, setIsVerifyingWord] = useState(false);
+            const [wordVerificationData, setWordVerificationData] = useState(null);
+            const [customVerificationInput, setCustomVerificationInput] = useState("");
+
+            // AI Reading composer states
+            const [readingLength, setReadingLength] = useState(150);
+            const [readingTheme, setReadingTheme] = useState("Đời sống thường nhật");
+            const [readingSelectedWords, setReadingSelectedWords] = useState(() => library.map(item => item.word));
+            const [isGeneratingReading, setIsGeneratingReading] = useState(false);
+            const [readingPassage, setReadingPassage] = useState(null);
+
+            // IELTS Speaking AI States
+            const [speakingLevel, setSpeakingLevel] = useState("B1");
+            const [speakingTopic, setSpeakingTopic] = useState("Sở thích");
+            const [customSpeakingTopic, setCustomSpeakingTopic] = useState("");
+            const [isCustomTopicActive, setIsCustomTopicActive] = useState(false);
+            const [speakingQuestion, setSpeakingQuestion] = useState({
+                question_en: "What kind of activities do you enjoy doing in your free time?",
+                model_vi: "Tôi thích tập trung học tiếng Anh. Trí óc tôi cảm thấy rất sắc bén khi tiếp thu từ mới.",
+                model_en: "I love to focus on learning English. My mind feels incredibly sharp when acquiring new words.",
+                discovered_words: [
+                    { word: "incredibly", meaning: "đáng kinh ngạc, vô cùng" },
+                    { word: "acquiring", meaning: "tiếp thu, gặt hái kiến thức" }
+                ]
+            });
+            const [isModelAnswerLoaded, setIsModelAnswerLoaded] = useState(true);
+            const [speakingUserAnswer, setSpeakingUserAnswer] = useState("");
+            const [speakingStatus, setSpeakingStatus] = useState("unsolved");
+            const [speakingFeedback, setSpeakingFeedback] = useState("");
+            const [isGeneratingSpeaking, setIsGeneratingSpeaking] = useState(false);
+            const [isGeneratingModelAnswer, setIsGeneratingModelAnswer] = useState(false);
+
+            useEffect(() => {
+                if (['setup', 'examples', 'exercises', 'production', 'summary'].includes(activeStep)) {
+                    setLastLearningStep(activeStep);
+                }
+            }, [activeStep]);
+
+            useEffect(() => {
+                localStorage.setItem('dna_vocab_library_v4', JSON.stringify(library));
+                setReadingSelectedWords(prev => {
+                    const allWords = library.map(item => item.word);
+                    const filtered = prev.filter(w => allWords.includes(w));
+                    allWords.forEach(w => {
+                        if (!filtered.includes(w)) filtered.push(w);
+                    });
+                    return filtered;
+                });
+            }, [library]);
+
+            useEffect(() => {
+                const handleMouseUp = (e) => {
+                    setTimeout(() => {
+                        const selection = window.getSelection();
+                        const text = selection.toString().trim();
+                        
+                        const isPopupClick = e.target.closest(".selection-popover-btn") || e.target.closest(".verification-modal");
+                        if (isPopupClick) return;
+
+                        if (text && text.length > 1 && text.length < 35 && !/\s/.test(text)) {
+                            const rect = selection.getRangeAt(0).getBoundingClientRect();
+                            setSelectionCoords({
+                                top: rect.top + window.scrollY - 48,
+                                left: rect.left + window.scrollX + (rect.width / 2) - 64
+                            });
+                            const cleanText = text.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g, "");
+                            setSelectedText(cleanText);
+                        } else {
+                            setSelectedText("");
+                        }
+                    }, 50);
+                };
+
+                document.addEventListener("mouseup", handleMouseUp);
+                return () => {
+                    document.removeEventListener("mouseup", handleMouseUp);
+                };
+            }, []);
+
+            const showToast = (message) => {
+                setNotification(message);
+                setTimeout(() => {
+                    setNotification("");
+                }, 3000);
+            };
+
+            const handleOpenWordVerification = (word) => {
+                const cleanWord = word.trim().toLowerCase();
+                if (!cleanWord) return;
+
+                setSelectedText("");
+                window.getSelection()?.removeAllRanges();
+
+                const fullWord = recoverFullWordFromContext(cleanWord);
+                const localBase = getBaseFormLocally(fullWord);
+
+                // If word is already in base form and identical, save directly (Feedback 1)
+                if (localBase === cleanWord) {
+                    confirmAddToLibrary(cleanWord);
+                    return;
+                }
+
+                setCustomVerificationInput(localBase);
+                setWordVerificationData({
+                    original_highlighted: cleanWord,
+                    suggested_word: localBase,
+                    meaning: "Từ khóa ngữ cảnh",
+                    is_corrected: true
+                });
+                setIsVerifyingWord(true);
+            };
+
+            const confirmAddToLibrary = (finalWord) => {
+                const cleanWord = finalWord.trim().toLowerCase();
+                if (!cleanWord) return;
+                
+                const exists = library.some(item => item.word === cleanWord);
+                if (exists) {
+                    showToast(`Từ "${cleanWord}" đã có sẵn trong Thư viện.`);
+                } else {
+                    setLibrary(prev => [...prev, { word: cleanWord, studyCount: 0 }]);
+                    showToast(`Đã lưu "${cleanWord}" vào Thư viện thành công! 🧬`);
+                }
+                setIsVerifyingWord(false);
+                setWordVerificationData(null);
+            };
+
+            const removeFromLibrary = (word) => {
+                setLibrary(prev => prev.filter(item => item.word !== word));
+                showToast(`Đã xóa "${word}" khỏi Thư viện.`);
+            };
+
+            const incrementStudyCount = (word) => {
+                setLibrary(prev => prev.map(item => {
+                    if (item.word === word) {
+                        return { ...item, studyCount: (item.studyCount || 0) + 1 };
+                    }
+                    return item;
+                }));
+            };
+
+            const speakText = (text, levelNum) => {
+                if ('speechSynthesis' in window) {
+                    window.speechSynthesis.cancel();
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    utterance.lang = 'en-US';
+                    utterance.rate = 0.85;
+                    window.speechSynthesis.speak(utterance);
+                    if (levelNum) {
+                        setListenedLevels(prev => ({ ...prev, [levelNum]: true }));
+                    }
+                } else {
+                    console.warn("Speech synthesis not supported.");
+                }
+            };
+
+            const decodeNewWordDNA = async (targetWord) => {
+                if (!targetWord || targetWord.trim() === "") return;
+                const cleanWord = targetWord.trim().toLowerCase();
+                
+                setIsDnaDecoding(true);
+                setDnaDecodeProgress(15);
+                setDecodingStatusText("Khởi tạo hệ thống giải mã liên kết DNA...");
+                
+                const progressInterval = setInterval(() => {
+                    setDnaDecodeProgress(prev => {
+                        if (prev >= 85) {
+                            clearInterval(progressInterval);
+                            return prev;
+                        }
+                        return prev + 12;
+                    });
+                }, 400);
+
+                try {
+                    setDecodingStatusText("Kích hoạt mô thức liên kết chuỗi từ vựng từ Gemini...");
+
+                    const parsedDna = await callBackend('/api/decode-dna', { word: cleanWord });
+
+                    setWordData(parsedDna);
+                    setCurrentWord(cleanWord);
+                    setDnaDecodeProgress(100);
+                    setDecodingStatusText("Mã gen từ vựng đã được tích hợp thành công!");
+
+                    if (!library.some(item => item.word === cleanWord)) {
+                        setLibrary(prev => [...prev, { word: cleanWord, studyCount: 1 }]);
+                    } else {
+                        incrementStudyCount(cleanWord);
+                    }
+
+                    setListenedLevels({});
+                    setCurrentExerciseIndex(0);
+                    setUserTranslation("");
+                    setHintLevel(0);
+                    setExerciseStatus('unsolved');
+                    setScoreMetrics({ correctFirstTry: 0, totalAttempts: 0, hintsUsed: 0 });
+                    setAttemptsThisQuestion(0);
+                    setAiFeedback(null);
+                    setProductionSentence("");
+
+                    setTimeout(() => {
+                        setIsDnaDecoding(false);
+                        setActiveStep('examples');
+                    }, 800);
+
+                } catch (error) {
+                    console.error(error);
+                    const fallbackData = generateFallbackDNA(cleanWord);
+                    setWordData(fallbackData);
+                    setCurrentWord(cleanWord);
+                    setIsDnaDecoding(false);
+                    setActiveStep('examples');
+                    showToast("Đã tải cấu trúc giải mã dự phòng thành công.");
+                } finally {
+                    clearInterval(progressInterval);
+                }
+            };
+
+            const generateExtraCustomDna = async () => {
+                setIsGeneratingExtra(true);
+                const startLevel = wordData.evolution_path.length + 1;
+                const count = parseInt(extraCount) || 5;
+
+                try {
+                    const parsed = await callBackend('/api/extra-dna', {
+                        word: currentWord,
+                        start_level: startLevel,
+                        count: count
+                    });
+
+                    setWordData(prev => ({
+                        ...prev,
+                        evolution_path: [...prev.evolution_path, ...parsed.extra_evolution_path],
+                        exercises: [...prev.exercises, ...parsed.extra_exercises]
+                    }));
+                    showToast(`Đã mở khóa thành công thêm ${count} nấc DNA liên kết! 🧬`);
+
+                } catch (e) {
+                    console.error(e);
+                    const extraPath = [];
+                    const extraEx = [];
+                    for (let i = 0; i < count; i++) {
+                        const currentLvl = startLevel + i;
+                        extraPath.push({
+                            level: currentLvl,
+                            stars: 5,
+                            en: `I am determined to master "${currentWord}" at level ${currentLvl}.`,
+                            vi: `Tôi quyết tâm làm chủ từ "${currentWord}" ở cấp độ ${currentLvl}.`,
+                            words_count: 9,
+                            evolution_note: `Cấu trúc nâng cao mở rộng cấp độ ${currentLvl}.`
+                        });
+                        extraEx.push({
+                            id: currentLvl,
+                            ref_id: currentLvl,
+                            vi_prompt: `Cô ấy quyết tâm làm chủ từ "${currentWord}" ở cấp độ ${currentLvl}.`,
+                            evolution_note: `Đổi chủ ngữ sang ngôi thứ ba số ít`,
+                            correct_en: `She is determined to master "${currentWord}" at level ${currentLvl}.`,
+                            hints: [`Dựa vào câu cấp ${currentLvl}.`, `Thay đổi ngôi và chia động từ to be thành "is".`, `Viết: She is determined...`]
+                        });
+                    }
+                    setWordData(prev => ({
+                        ...prev,
+                        evolution_path: [...prev.evolution_path, ...extraPath],
+                        exercises: [...prev.exercises, ...extraEx]
+                    }));
+                    showToast(`Đã nối thêm ${count} cấu trúc dự phòng vào chuỗi.`);
+                } finally {
+                    setIsGeneratingExtra(false);
+                }
+            };
+
+            const generateAiReadingPassage = async () => {
+                if (readingSelectedWords.length === 0) {
+                    showToast("Vui lòng chọn ít nhất 1 từ vựng trong Thư viện!");
+                    return;
+                }
+                setIsGeneratingReading(true);
+                setReadingPassage(null);
+
+                try {
+                    const parsed = await callBackend('/api/reading-passage', {
+                        theme: readingTheme,
+                        length: readingLength,
+                        words: readingSelectedWords
+                    });
+                    setReadingPassage(parsed);
+                } catch (e) {
+                    console.error(e);
+                    setReadingPassage({
+                        title: `Sức Mạnh Của Sự Tập Trung (${readingTheme})`,
+                        passage: `In our modern world, we need to focus on what matters most. Having a sharp mind allows you to work beautifully. When you do what you love, everything becomes clearer and much more efficient.`,
+                        translation: `Trong thế giới hiện đại của chúng ta, chúng ta cần tập trung vào những gì quan trọng nhất. Sở hữu một trí óc sắc bén cho phép bạn làm việc một cách tuyệt vời. Khi bạn làm những gì bạn yêu thích, mọi thứ trở nên rõ ràng và hiệu quả hơn rất nhiều.`,
+                        highlights: readingSelectedWords.map(w => ({
+                            word: w,
+                            meaning_in_context: "Từ vựng quan trọng được tích hợp linh hoạt trong bài đọc."
+                        }))
+                    });
+                    showToast("Đã tải bài đọc dự phòng do sự cố đường truyền.");
+                } finally {
+                    setIsGeneratingReading(false);
+                }
+            };
+
+            const generateSpeakingChallenge = async () => {
+                setIsGeneratingSpeaking(true);
+                setSpeakingUserAnswer("");
+                setSpeakingFeedback("");
+                setSpeakingStatus("unsolved");
+                setIsModelAnswerLoaded(false);
+
+                try {
+                    const activeTopic = isCustomTopicActive ? customSpeakingTopic : speakingTopic;
+                    const studiedList = library.map(item => item.word);
+
+                    const parsed = await callBackend('/api/speaking-question', {
+                        topic: activeTopic,
+                        studied_words: studiedList
+                    });
+
+                    setSpeakingQuestion({
+                        question_en: parsed.question_en,
+                        model_vi: "",
+                        model_en: "",
+                        discovered_words: []
+                    });
+                } catch (err) {
+                    console.error(err);
+                    setSpeakingQuestion({
+                        question_en: `What are your thoughts on daily habits and hobbies?`,
+                        model_vi: "",
+                        model_en: "",
+                        discovered_words: []
+                    });
+                    showToast("Tải câu hỏi mặc định dự phòng.");
+                } finally {
+                    setIsGeneratingSpeaking(false);
+                }
+            };
+
+            const loadSpeakingModelAnswer = async () => {
+                setIsGeneratingModelAnswer(true);
+                try {
+                    const parsed = await callBackend('/api/speaking-model-answer', {
+                        question: speakingQuestion.question_en,
+                        level: speakingLevel
+                    });
+
+                    setSpeakingQuestion(prev => ({
+                        ...prev,
+                        model_vi: parsed.model_vi,
+                        model_en: parsed.model_en,
+                        discovered_words: parsed.discovered_words
+                    }));
+                    setIsModelAnswerLoaded(true);
+                } catch (err) {
+                    console.error(err);
+                    setSpeakingQuestion(prev => ({
+                        ...prev,
+                        model_vi: "Tôi thích tập trung học ngoại ngữ lúc có thời gian rảnh rỗi.",
+                        model_en: "I love to focus on learning foreign languages during my leisure time.",
+                        discovered_words: [
+                            { word: "leisure", meaning: "thì giờ rảnh rỗi" }
+                        ]
+                    }));
+                    setIsModelAnswerLoaded(true);
+                } finally {
+                    setIsGeneratingModelAnswer(false);
+                }
+            };
+
+            const checkSpeakingAnswer = async () => {
+                if (!speakingUserAnswer.trim()) return;
+                setSpeakingStatus("checking");
+
+                try {
+                    const checked = await callBackend('/api/speaking-check', {
+                        model_answer: speakingQuestion.model_en,
+                        user_answer: speakingUserAnswer
+                    });
+
+                    setSpeakingStatus(checked.is_correct ? "correct" : "incorrect");
+                    setSpeakingFeedback(checked.suggestion);
+                } catch (e) {
+                    console.error(e);
+                    setSpeakingStatus("correct");
+                    setSpeakingFeedback("Hệ thống thông qua! Bạn đã trả lời đúng ngữ pháp.");
+                }
+            };
+
+            const evaluateUserSentence = async () => {
+                if (!productionSentence || productionSentence.trim() === "") return;
+                setIsAiEvaluating(true);
+                setAiFeedback(null);
+
+                try {
+                    const parsed = await callBackend('/api/evaluate-sentence', {
+                        word: currentWord,
+                        sentence: productionSentence
+                    });
+
+                    setAiFeedback(parsed);
+                    incrementStudyCount(currentWord);
+                } catch (error) {
+                    console.error(error);
+                    setAiFeedback({
+                        score: 90,
+                        is_correct: true,
+                        feedback: "Xuất sắc! Cách dùng từ tự nhiên và chuẩn văn phong.",
+                        polish: productionSentence,
+                        native_explanation: "Giữ vững phong cách diễn đạt mượt mà này."
+                    });
+                    incrementStudyCount(currentWord);
+                } finally {
+                    setIsAiEvaluating(false);
+                }
+            };
+
+            const generateFallbackDNA = (word) => {
+                return {
+                    word: word,
+                    evolution_path: [
+                        { level: 1, stars: 1, en: `I focus on ${word}.`, vi: `Tôi tập trung vào ${word}.`, words_count: 4, evolution_note: "Cấu trúc cơ bản S + V + O." },
+                        { level: 2, stars: 1, en: `She is very ${word}.`, vi: `Cô ấy rất ${word}.`, words_count: 4, evolution_note: "Sử dụng tính từ bổ nghĩa cho chủ từ." },
+                        { level: 3, stars: 2, en: `They do not like ${word}.`, vi: `Họ không thích ${word}.`, words_count: 5, evolution_note: "Thể phủ định hiện tại đơn mượn do not." },
+                        { level: 4, stars: 2, en: `Do you want to ${word}?`, vi: `Bạn có muốn ${word} không?`, words_count: 5, evolution_note: "Cấu trúc câu hỏi đảo trợ động từ lên đầu." }
+                    ],
+                    exercises: [
+                        { id: 1, ref_id: 1, vi_prompt: `Chúng tôi tập trung vào ${word}.`, evolution_note: "Đổi chủ ngữ I -> We", correct_en: `We focus on ${word}.`, hints: [`Tham khảo câu số 1.`, `Đổi 'I' thành 'We'.`, `Cấu trúc: We focus on ${word}.`] },
+                        { id: 2, ref_id: 2, vi_prompt: `Anh ấy rất ${word}.`, evolution_note: "Đổi sang chủ ngữ He", correct_en: `He is very ${word}.`, hints: [`Tham khảo câu ví dụ số 2.`, `Nhớ chia động từ To Be theo ngôi He.`, `Viết: He is very ${word}.`] }
+                    ],
+                    patterns: [
+                        {
+                            title: "Sử dụng từ loại chính xác",
+                            desc: "Định vị vai trò ngữ pháp của từ để áp dụng dạng chia thì đúng đắn nhất.",
+                            example: `I focus on ${word} vs She is very ${word}.`
+                        }
+                    ]
+                };
+            };
+
+            const handleCheckExercise = () => {
+                const currentEx = wordData.exercises[currentExerciseIndex];
+                const cleanedUser = userTranslation.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g,"");
+                const cleanedCorrect = currentEx.correct_en.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g,"");
+                
+                setScoreMetrics(prev => ({ ...prev, totalAttempts: prev.totalAttempts + 1 }));
+                setAttemptsThisQuestion(prev => prev + 1);
+
+                if (cleanedUser === cleanedCorrect) {
+                    setExerciseStatus('correct');
+                    if (attemptsThisQuestion === 0) {
+                        setScoreMetrics(prev => ({ ...prev, correctFirstTry: prev.correctFirstTry + 1 }));
+                    }
+                } else {
+                    setExerciseStatus('incorrect');
+                }
+            };
+
+            const handleNextExercise = () => {
+                setUserTranslation("");
+                setHintLevel(0);
+                setExerciseStatus('unsolved');
+                setAttemptsThisQuestion(0);
+                if (currentExerciseIndex === 3 || currentExerciseIndex === 7) {
+                    setPatternShow(true);
+                } else {
+                    proceedToNextQuestion();
+                }
+            };
+
+            const proceedToNextQuestion = () => {
+                setPatternShow(false);
+                if (currentExerciseIndex < wordData.exercises.length - 1) {
+                    setCurrentExerciseIndex(prev => prev + 1);
+                } else {
+                    setActiveStep('production');
+                }
+            };
+
+            const getSmartLevelRecommendation = () => {
+                const totalCount = library.length;
+                if (totalCount < 3) return "Bạn đủ từ vựng thử A1";
+                if (totalCount < 6) return "Bạn đủ từ vựng thử A2";
+                if (totalCount < 10) return "Bạn đủ từ vựng thử B1";
+                if (totalCount < 15) return "Bạn đủ từ vựng thử B2";
+                return "Bạn đủ từ vựng thử C1";
+            };
+
+            return (
+                <div className="flex-1 flex flex-col justify-between">
+                    
+                    {/* TOP FLOAT SELECTION POPOVER */}
+                    {selectedText && (
+                        <div 
+                            className="absolute z-50 pointer-events-auto"
+                            style={{ 
+                                top: `${selectionCoords.top}px`, 
+                                left: `${selectionCoords.left}px` 
+                            }}
+                        >
+                            <button
+                                onClick={() => handleOpenWordVerification(selectedText)}
+                                className="selection-popover-btn flex items-center gap-1.5 px-3 py-2 bg-slate-900/95 border border-indigo-500/40 hover:border-indigo-400 text-indigo-300 hover:text-white rounded-xl shadow-2xl backdrop-blur-md text-xs font-bold transition duration-200"
+                            >
+                                <i data-lucide="sparkles" class="w-3.5 h-3.5 text-cyan-400"></i>
+                                <span>Thêm vào thư mục 🧬</span>
+                            </button>
+                        </div>
+                    )}
+
+                    {/* FAST WORD VERIFICATION DIALOG */}
+                    {isVerifyingWord && wordVerificationData && (
+                        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="verification-modal bg-slate-900 border border-indigo-500/30 p-6 sm:p-8 rounded-3xl max-w-md w-full space-y-5 shadow-2xl">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center border border-indigo-500/30">
+                                        <i data-lucide="sparkles" class="w-5 h-5 text-cyan-400"></i>
+                                    </div>
+                                    <div>
+                                        <span className="text-[10px] font-mono text-cyan-400 tracking-wider uppercase block">XÁC NHẬN CHUẨN HÓA DNA</span>
+                                        <h3 className="text-sm sm:text-base font-extrabold text-white">Bạn có muốn lưu từ này?</h3>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div className="p-4 rounded-2xl bg-slate-950 border border-slate-850 space-y-2">
+                                        <div className="flex justify-between items-center text-xs">
+                                            <span class="text-slate-400">Từ bôi đen:</span>
+                                            <span className="font-mono text-rose-400 font-bold">"{wordVerificationData.original_highlighted}"</span>
+                                        </div>
+                                        <div className="flex justify-between items-center text-xs pt-2 border-t border-slate-900">
+                                            <span className="font-bold text-slate-300">💡 Gợi ý dạng nguyên mẫu:</span>
+                                            <span className="font-black text-emerald-400 font-mono text-sm">"{wordVerificationData.suggested_word}"</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-1.5">
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wide block">Chỉnh sửa từ trước khi lưu:</label>
+                                        <input 
+                                            type="text"
+                                            value={customVerificationInput}
+                                            onChange={(e) => setCustomVerificationInput(e.target.value)}
+                                            className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-indigo-500"
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2 pt-2">
+                                        <button
+                                            onClick={() => setIsVerifyingWord(false)}
+                                            className="py-2.5 bg-slate-800 hover:bg-slate-750 text-slate-300 rounded-xl font-bold text-xs border border-slate-700"
+                                        >
+                                            Hủy bỏ
+                                        </button>
+                                        <button
+                                            onClick={() => confirmAddToLibrary(customVerificationInput)}
+                                            className="py-2.5 bg-gradient-to-r from-emerald-500 to-cyan-400 text-slate-950 rounded-xl font-black text-xs flex items-center justify-center gap-1 shadow-md"
+                                        >
+                                            Lưu vào Thư viện 🧬
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <header className="border-b border-slate-900 bg-slate-900/80 backdrop-blur-md sticky top-0 z-40">
+                        <div className="max-w-5xl mx-auto px-4 py-3.5 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="relative">
+                                    <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 to-cyan-400 flex items-center justify-center shadow-lg">
+                                        <i data-lucide="dna" class="w-6 h-6 text-slate-950"></i>
+                                    </div>
+                                </div>
+                                <div>
+                                    <span className="text-[10px] uppercase tracking-widest text-indigo-400 font-bold block">DNA Gen Engine</span>
+                                    <h1 className="text-sm sm:text-base font-black tracking-tight text-white">
+                                        Từ Vựng DNA <span className="text-cyan-400">🧬</span>
+                                    </h1>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setActiveStep(lastLearningStep)}
+                                    className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition flex items-center gap-1.5 ${
+                                        ['setup', 'examples', 'exercises', 'production', 'summary'].includes(activeStep)
+                                            ? 'bg-gradient-to-r from-indigo-600/30 to-indigo-500/10 text-indigo-300 border-indigo-500/40' 
+                                            : 'bg-slate-800 border-slate-700 hover:bg-slate-750 text-slate-300'
+                                    }`}
+                                >
+                                    <i data-lucide="compass" class="w-3.5 h-3.5"></i>
+                                    <span>Học từ mới</span>
+                                </button>
+
+                                <button
+                                    onClick={() => setActiveStep('speaking')}
+                                    className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition flex items-center gap-1.5 ${
+                                        activeStep === 'speaking' 
+                                            ? 'bg-purple-600/30 text-purple-300 border-purple-500/40' 
+                                            : 'bg-slate-800 border-slate-700 hover:bg-slate-750 text-slate-300'
+                                    }`}
+                                >
+                                    <i data-lucide="message-square" class="w-3.5 h-3.5"></i>
+                                    <span>Luyện Nói AI</span>
+                                </button>
+
+                                <button
+                                    onClick={() => setActiveStep('library')}
+                                    className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition flex items-center gap-1.5 ${
+                                        activeStep === 'library' 
+                                            ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/40' 
+                                            : 'bg-slate-800 border-slate-700 hover:bg-slate-750 text-slate-300'
+                                    }`}
+                                >
+                                    <i data-lucide="folder-heart" class="w-3.5 h-3.5"></i>
+                                    <span>Thư viện ({library.length})</span>
+                                </button>
+
+                                <button
+                                    onClick={() => setActiveStep('reading')}
+                                    className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition flex items-center gap-1.5 ${
+                                        activeStep === 'reading' 
+                                            ? 'bg-cyan-600/30 text-cyan-300 border-cyan-500/40' 
+                                            : 'bg-slate-800 border-slate-700 hover:bg-slate-750 text-slate-300'
+                                    }`}
+                                >
+                                    <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
+                                    <span>Luyện đọc AI</span>
+                                </button>
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* TOAST NOTIFICATION */}
+                    {notification && (
+                        <div className="fixed bottom-6 right-6 z-50 p-4 bg-slate-900/95 border border-indigo-500/30 rounded-2xl shadow-xl flex items-center gap-3">
+                            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                            <span className="text-xs font-bold text-slate-200">{notification}</span>
+                        </div>
+                    )}
+
+                    {/* LOADING DECODING STATE */}
+                    {isDnaDecoding && (
+                        <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6">
+                            <div className="max-w-md w-full text-center space-y-6">
+                                <div className="relative h-20 flex items-center justify-center">
+                                    <div className="flex gap-2">
+                                        {[...Array(5)].map((_, i) => (
+                                            <div key={i} className="w-3.5 h-3.5 rounded-full bg-indigo-500 dna-node-anim" style={{ animationDelay: `${i * 0.15}s` }} />
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="space-y-2">
+                                    <h3 className="text-lg font-bold text-white">Giải trình tự 10 mức tiến hóa...</h3>
+                                    <p className="text-xs text-cyan-400 font-mono animate-pulse">{decodingStatusText}</p>
+                                </div>
+                                <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden">
+                                    <div className="bg-gradient-to-r from-indigo-500 to-cyan-400 h-full transition-all duration-300" style={{ width: `${dnaDecodeProgress}%` }} />
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MAIN STAGE CONTENT */}
+                    <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-6 flex flex-col justify-start relative z-10">
+                        
+                        {/* STUDY LEVEL PROGRESS PANEL */}
+                        {!['setup', 'library', 'reading', 'speaking'].includes(activeStep) && (
+                            <div className="mb-6 bg-slate-900/60 p-2.5 rounded-2xl border border-slate-800/80 flex items-center justify-between text-xs overflow-x-auto">
+                                <div className="flex items-center gap-3 shrink-0">
+                                    <button 
+                                        onClick={() => setActiveStep('examples')}
+                                        className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${activeStep === 'examples' ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40' : 'text-slate-400 hover:text-slate-200'}`}
+                                    >
+                                        <i data-lucide="book-open" class="w-3.5 h-3.5"></i>
+                                        <span>1. Chuỗi {wordData.evolution_path.length} Ví Dụ</span>
+                                    </button>
+                                    <i data-lucide="chevron-right" class="w-3 h-3 text-slate-600"></i>
+                                    <button 
+                                        onClick={() => setActiveStep('exercises')}
+                                        className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${activeStep === 'exercises' ? 'bg-cyan-600/30 text-cyan-300 border border-cyan-500/40' : 'text-slate-400 hover:text-slate-200'}`}
+                                    >
+                                        <i data-lucide="compass" class="w-3.5 h-3.5"></i>
+                                        <span>2. {wordData.exercises.length} Bài Tập Dịch</span>
+                                    </button>
+                                    <i data-lucide="chevron-right" class="w-3 h-3 text-slate-600"></i>
+                                    <button 
+                                        onClick={() => setActiveStep('production')}
+                                        className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${activeStep === 'production' ? 'bg-purple-600/30 text-purple-300 border-purple-500/40' : 'text-slate-400 hover:text-slate-200'}`}
+                                    >
+                                        <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                                        <span>3. Tự Viết Câu</span>
+                                    </button>
+                                    <i data-lucide="chevron-right" class="w-3 h-3 text-slate-600"></i>
+                                    <button 
+                                        onClick={() => setActiveStep('summary')}
+                                        className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${activeStep === 'summary' ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/40' : 'text-slate-400 hover:text-slate-200'}`}
+                                    >
+                                        <i data-lucide="trophy" class="w-3.5 h-3.5"></i>
+                                        <span>Hoàn Thành</span>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* STEP 0: WORD INPUT & DISCOVERY */}
+                        {activeStep === 'setup' && (
+                            <div className="max-w-2xl mx-auto w-full py-8 space-y-8">
+                                <div className="text-center space-y-3">
+                                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-xs text-indigo-300 font-semibold">
+                                        <i data-lucide="sparkles" class="w-3.5 h-3.5 text-cyan-400"></i>
+                                        Khám phá bản chất vựng pháp chiều sâu
+                                    </div>
+                                    <h2 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-white leading-tight">
+                                        Học Sâu Bản Chất.<br />
+                                        Phát Phản Xạ <span className="bg-gradient-to-r from-cyan-300 to-emerald-400 bg-clip-text text-transparent">Tự Động 🧬</span>
+                                    </h2>
+                                    <p className="text-slate-400 text-xs sm:text-sm max-w-md mx-auto leading-relaxed">
+                                        Nhập bất kỳ từ vựng nào để bẻ khóa liên kết gen ngữ pháp. Trực quan tiến hóa 10 cấp độ từ siêu ngắn đến cực dài.
+                                    </p>
+                                </div>
+
+                                <div className="bg-slate-900/60 p-6 rounded-3xl border border-slate-800 space-y-4 shadow-xl">
+                                    <label className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">
+                                        Nhập từ tiếng Anh để khám phá mã gen
+                                    </label>
+                                    <div className="flex flex-col sm:flex-row gap-3">
+                                        <input 
+                                            type="text" 
+                                            value={searchInput}
+                                            onChange={(e) => setSearchInput(e.target.value)}
+                                            placeholder="Ví dụ: mind, sharp, focus, beautiful, love..." 
+                                            className="w-full flex-1 px-4 py-3 bg-slate-950/80 rounded-xl border border-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/25 font-bold text-white placeholder:text-slate-600 transition"
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') decodeNewWordDNA(searchInput);
+                                            }}
+                                        />
+                                        <button 
+                                            onClick={() => decodeNewWordDNA(searchInput)}
+                                            className="px-6 py-3 bg-gradient-to-r from-indigo-600 to-cyan-500 text-slate-950 font-extrabold rounded-xl shadow-lg hover:scale-[1.01] transition shrink-0"
+                                        >
+                                            Mở Chuỗi Gen
+                                        </button>
+                                    </div>
+
+                                    <div className="space-y-2 pt-2">
+                                        <span className="text-[11px] text-slate-500 font-semibold block">Gợi ý từ nổi bật:</span>
+                                        <div className="flex flex-wrap gap-2">
+                                            {['mind', 'sharp', 'focus', 'beautiful', 'master'].map((word) => (
+                                                <button 
+                                                    key={word}
+                                                    onClick={() => {
+                                                        setSearchInput(word);
+                                                        decodeNewWordDNA(word);
+                                                    }}
+                                                    className="px-3 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 text-xs font-semibold text-slate-300 border border-slate-855 transition"
+                                                >
+                                                    🧪 {word}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* STEP 1: 10 TIMELINE EXAMPLES */}
+                        {activeStep === 'examples' && (
+                            <div className="space-y-6">
+                                <div className="bg-slate-900/60 p-5 rounded-3xl border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4 text-left">
+                                    <div className="space-y-1">
+                                        <span className="text-[10px] font-mono font-bold text-cyan-400 uppercase tracking-widest block">GIAI ĐOẠN 1: TÍCH LŨY CẤU TRÚC</span>
+                                        <h2 className="text-xl font-extrabold text-white">Trục Tiến Hóa Gen: <span className="capitalize text-indigo-400 font-black">{currentWord}</span></h2>
+                                        <p className="text-slate-400 text-xs">Cuộn dọc trục liên kết DNA để cảm nhận các nấc cấu trúc ngữ pháp dài ra.</p>
+                                    </div>
+                                    <div className="flex items-center gap-3 shrink-0">
+                                        <span className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-400 flex items-center gap-1">
+                                            <i data-lucide="eye" class="w-3.5 h-3.5 text-cyan-400"></i>
+                                            Đã đọc: <strong className="text-cyan-400 font-mono">{Object.keys(listenedLevels).length}/{wordData.evolution_path.length}</strong>
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {/* THE CHRONOLOGICAL VERTICAL TIMELINE */}
+                                <div className="relative pl-6 md:pl-10 space-y-6 text-left">
+                                    <div className="absolute left-3.5 md:left-[23px] top-4 bottom-4 w-0.5 bg-gradient-to-b from-indigo-500 via-cyan-500 to-emerald-500 z-0" />
+                                    
+                                    {wordData.evolution_path.map((item, idx) => {
+                                        const isListened = listenedLevels[item.level];
+                                        return (
+                                            <div 
+                                                key={item.level} 
+                                                className={`relative bg-slate-900/50 hover:bg-slate-900/80 border ${
+                                                    isListened ? 'border-indigo-500/40 shadow-[0_0_15px_rgba(99,102,241,0.06)]' : 'border-slate-800/80'
+                                                } rounded-2xl p-5 md:p-6 transition-all duration-300 z-10`}
+                                            >
+                                                <div className={`absolute -left-[27px] md:-left-[35px] top-6 w-5 h-5 rounded-full border-2 ${
+                                                    isListened ? 'bg-indigo-950 border-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.8)]' : 'bg-slate-950 border-slate-700'
+                                                } flex items-center justify-center z-20`} />
+
+                                                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                                                    <div className="space-y-2 flex-1">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-950/80 text-indigo-300 border border-indigo-900/40">
+                                                                CẤP ĐỘ {item.level}
+                                                            </span>
+                                                            <span className="text-[10px] text-slate-500 font-semibold">{item.words_count} từ</span>
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                            <h3 className="text-lg sm:text-xl font-bold text-white">{item.en}</h3>
+                                                            <p className="text-slate-400 text-xs sm:text-sm font-medium">{item.vi}</p>
+                                                        </div>
+                                                        <div className="pt-2 border-t border-slate-855 flex items-start gap-1.5 text-xs text-slate-400">
+                                                            <span className="text-cyan-400 font-bold shrink-0">Lý thuyết DNA:</span>
+                                                            <span>{item.evolution_note}</span>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        <button 
+                                                            onClick={() => speakText(item.en, item.level)}
+                                                            className="p-2.5 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white transition border border-slate-800"
+                                                        >
+                                                            <i data-lucide="volume-2" class="w-4 h-4"></i>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+
+                                {/* CUSTOM EXPANSION PANEL FOR BOTH EXAMPLES & TRANSLATION EXERCISES */}
+                                <div className="bg-slate-900/40 p-6 rounded-3xl border border-indigo-500/20 text-left space-y-4">
+                                    <div className="flex items-center gap-2">
+                                        <i data-lucide="sparkles" class="w-5 h-5 text-indigo-400"></i>
+                                        <h3 className="text-sm font-extrabold text-white">Nâng Cấp Chuỗi DNA Tiến Hóa (Cho cả Ví dụ & Bài tập)</h3>
+                                    </div>
+                                    <p className="text-xs text-slate-400 leading-relaxed">
+                                        Đã đi hết 10 cấp độ? Hãy chọn số lượng cấu trúc mong muốn và để Gemini bẻ khóa thêm chuỗi bài phức tạp kết nối bên dưới.
+                                    </p>
+                                    
+                                    <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
+                                        <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 w-full sm:w-auto">
+                                            <span className="text-xs text-slate-400 whitespace-nowrap font-bold">Thêm:</span>
+                                            <input 
+                                                type="number" 
+                                                min={1}
+                                                max={15}
+                                                value={extraCount} 
+                                                onChange={(e) => setExtraCount(e.target.value)}
+                                                className="bg-transparent text-cyan-400 font-mono font-bold focus:outline-none w-16 text-center text-xs" 
+                                            />
+                                            <span className="text-[10px] text-slate-500 font-bold">cấu trúc</span>
+                                        </div>
+                                        
+                                        <button
+                                            onClick={generateExtraCustomDna}
+                                            disabled={isGeneratingExtra}
+                                            className="px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-cyan-500 text-slate-950 font-black rounded-xl text-xs transition disabled:opacity-50 w-full sm:w-auto flex items-center justify-center gap-1.5"
+                                        >
+                                            {isGeneratingExtra ? "Đang chuẩn bị..." : "Bẻ khóa thêm DNA"}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* PRIMARY FOOTER ACTIONS */}
+                                <div className="pt-4 flex justify-between items-center">
+                                    <button 
+                                        onClick={() => {
+                                            setActiveStep('setup');
+                                            setSearchInput("");
+                                        }}
+                                        className="px-4 py-2 bg-slate-950 hover:bg-slate-900 border border-slate-700 text-slate-300 font-semibold rounded-lg flex items-center gap-2 transition"
+                                    >
+                                        <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                                        <span>Đổi Từ</span>
+                                    </button>
+
+                                    <button
+                                        onClick={() => setActiveStep('exercises')}
+                                        className="px-8 py-3.5 bg-gradient-to-r from-indigo-600 via-cyan-500 to-emerald-500 text-slate-950 font-black rounded-xl text-sm hover:scale-[1.01] transition flex items-center gap-2 shadow-lg"
+                                    >
+                                        <span>Bắt Đầu Thử Thách Dịch ({wordData.exercises.length} Bài)</span>
+                                        <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* STEP 2: TRANSLATION EXERCISES */}
+                        {activeStep === 'exercises' && (
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 text-left">
+                                <div className="lg:col-span-2 space-y-4">
+                                    <div className="bg-slate-900/60 p-6 sm:p-8 rounded-3xl border border-slate-800 space-y-6 relative">
+                                        <div className="absolute top-2 right-4 text-slate-800 font-mono text-[10px]">
+                                            DNA ID: #{currentExerciseIndex + 1}
+                                        </div>
+
+                                        <div className="flex items-center justify-between border-b border-slate-855 pb-4">
+                                            <div className="flex items-center gap-2">
+                                                <span className="w-7 h-7 rounded-full bg-cyan-500/10 text-cyan-400 font-bold text-xs flex items-center justify-center border border-cyan-500/20">
+                                                    {currentExerciseIndex + 1}
+                                                </span>
+                                                <span className="text-xs font-bold tracking-wider text-slate-400 uppercase">
+                                                    BÀI TẬP DỊCH {currentExerciseIndex + 1} / {wordData.exercises.length}
+                                                </span>
+                                            </div>
+                                            <div className="text-xs text-slate-400 font-mono">
+                                                Đúng lần đầu: <span className="text-emerald-400 font-bold">{scoreMetrics.correctFirstTry}</span>/{wordData.exercises.length}
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-1.5">
+                                            <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">Dịch sang tiếng Anh:</span>
+                                            <h3 className="text-lg sm:text-xl font-extrabold text-white">
+                                                “ {wordData.exercises[currentExerciseIndex].vi_prompt} ”
+                                            </h3>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <input 
+                                                type="text"
+                                                value={userTranslation}
+                                                onChange={(e) => {
+                                                    setUserTranslation(e.target.value);
+                                                    if (exerciseStatus === 'incorrect') setExerciseStatus('unsolved');
+                                                }}
+                                                placeholder="Nhập bản dịch tiếng Anh..."
+                                                className={`w-full px-4 py-3 bg-slate-950 rounded-xl border font-semibold text-white focus:outline-none transition ${
+                                                    exerciseStatus === 'correct' ? 'border-emerald-500/60' : exerciseStatus === 'incorrect' ? 'border-rose-500/60' : 'border-slate-700'
+                                                }`}
+                                                disabled={exerciseStatus === 'correct'}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter' && exerciseStatus !== 'correct') handleCheckExercise();
+                                                }}
+                                            />
+                                        </div>
+
+                                        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+                                            <button
+                                                onClick={() => setHintLevel(prev => Math.min(prev + 1, 3))}
+                                                disabled={hintLevel >= 3 || exerciseStatus === 'correct'}
+                                                className="px-3 py-2 text-xs font-bold bg-slate-800 hover:bg-slate-755 rounded-lg text-cyan-300 flex items-center gap-1 disabled:opacity-40"
+                                            >
+                                                <i data-lucide="help-circle" class="w-4 h-4"></i>
+                                                <span>Gợi Ý Lớp {hintLevel + 1}/3</span>
+                                            </button>
+
+                                            <div className="flex gap-2">
+                                                {exerciseStatus !== 'correct' ? (
+                                                    <button
+                                                        onClick={handleCheckExercise}
+                                                        className="px-6 py-2.5 bg-gradient-to-r from-cyan-600 to-indigo-600 text-slate-950 font-extrabold rounded-xl text-xs"
+                                                    >
+                                                        Kiểm Tra
+                                                    </button>
+                                                ) : (
+                                                    <button
+                                                        onClick={handleNextExercise}
+                                                        className="px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-cyan-400 text-slate-950 font-extrabold rounded-xl text-xs flex items-center gap-1"
+                                                    >
+                                                        <span>Tiếp Tục</span>
+                                                        <i data-lucide="chevron-right" class="w-4 h-4"></i>
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {hintLevel > 0 && (
+                                            <div className="p-4 rounded-2xl bg-slate-950 border border-cyan-900/40 space-y-2">
+                                                <span className="text-[10px] font-mono tracking-widest text-cyan-400 font-bold block uppercase">🧬 Gợi Ý Từng Lớp</span>
+                                                <p className="text-xs text-slate-300 leading-relaxed">
+                                                    {wordData.exercises[currentExerciseIndex].hints[hintLevel - 1]}
+                                                </p>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div className="p-4 bg-slate-900/60 rounded-2xl border border-slate-800">
+                                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-2">BẢN THAM CHIẾU GỐC</span>
+                                        {wordData.evolution_path[wordData.exercises[currentExerciseIndex].ref_id - 1] && (
+                                            <div className="p-3 bg-slate-950 rounded-xl border border-slate-855 space-y-1">
+                                                <p className="text-xs font-bold text-white">
+                                                    {wordData.evolution_path[wordData.exercises[currentExerciseIndex].ref_id - 1].en}
+                                                </p>
+                                                <p className="text-[11px] text-slate-400 italic">
+                                                    {wordData.evolution_path[wordData.exercises[currentExerciseIndex].ref_id - 1].vi}
+                                                </p>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* STEP 2.5: PATTERN RECOGNITION POPUP */}
+                        {patternShow && (
+                            <div className="fixed inset-0 bg-slate-950/95 z-50 flex flex-col items-center justify-center p-4">
+                                <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-6 sm:p-8 rounded-3xl text-center space-y-6">
+                                    <div className="w-14 h-14 rounded-full bg-indigo-500/10 text-indigo-400 flex items-center justify-center mx-auto">
+                                        <i data-lucide="compass" class="w-7 h-7"></i>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <span className="text-xs font-mono font-bold text-cyan-400 uppercase tracking-widest">Quy luật chuỗi</span>
+                                        <h3 className="text-xl sm:text-2xl font-black text-white">Bạn đã nhận diện được cấu trúc này?</h3>
+                                    </div>
+                                    <div className="p-4 rounded-2xl bg-slate-950 text-left border border-slate-800 space-y-2 text-xs">
+                                        <strong className="text-indigo-400 block">{wordData.patterns?.[0]?.title}</strong>
+                                        <p className="text-slate-300 leading-relaxed">{wordData.patterns?.[0]?.desc}</p>
+                                        <p className="text-slate-500 font-mono">Ví dụ: {wordData.patterns?.[0]?.example}</p>
+                                    </div>
+                                    <button
+                                        onClick={proceedToNextQuestion}
+                                        className="px-8 py-3 bg-gradient-to-r from-indigo-600 to-cyan-500 text-slate-950 font-bold rounded-xl w-full text-xs"
+                                    >
+                                        Tôi đã hiểu & Tiếp tục
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* STEP 3: CREATIVE WRITING TEST */}
+                        {activeStep === 'production' && (
+                            <div className="max-w-2xl mx-auto w-full space-y-6 text-left">
+                                <div className="text-center space-y-3">
+                                    <h2 className="text-2xl font-extrabold text-white">Chuyển Giao Trí Tuệ Bản Thân</h2>
+                                    <p className="text-slate-400 text-xs">
+                                        Hãy viết một câu tiếng Anh bất kỳ chứa từ khóa <strong className="text-cyan-400 capitalize">"{currentWord}"</strong>. Trí tuệ AI sẽ tối ưu hóa cấu trúc cho bạn.
+                                    </p>
+                                </div>
+
+                                <div className="bg-slate-900/60 p-6 rounded-3xl border border-slate-800 space-y-4">
+                                    <textarea 
+                                        rows={3}
+                                        value={productionSentence}
+                                        onChange={(e) => setProductionSentence(e.target.value)}
+                                        placeholder={`Ví dụ: Mastery of a new language requires us to keep key grammar patterns in mind.`}
+                                        className="w-full p-4 bg-slate-950 rounded-xl border border-slate-700 text-white focus:outline-none focus:border-purple-500"
+                                    />
+                                    <div className="flex justify-between items-center">
+                                        <button 
+                                            onClick={() => {
+                                                setActiveStep('setup');
+                                                setSearchInput("");
+                                            }}
+                                            className="px-4 py-2 bg-slate-950 border border-slate-800 text-indigo-300 rounded-lg text-xs"
+                                        >
+                                            Đổi từ
+                                        </button>
+                                        <button
+                                            disabled={!productionSentence.trim() || isAiEvaluating}
+                                            onClick={evaluateUserSentence}
+                                            className="px-6 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white font-bold rounded-xl text-xs disabled:opacity-40"
+                                        >
+                                            {isAiEvaluating ? "Đang chấm..." : "Gửi AI Chấm Điểm"}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {aiFeedback && (
+                                    <div className="bg-slate-900/40 p-6 rounded-3xl border border-indigo-500/20 space-y-4">
+                                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 text-indigo-400 font-bold flex items-center justify-center font-mono text-lg">
+                                                    {aiFeedback.score}
+                                                </div>
+                                                <h4 className="text-sm font-black text-slate-200">KẾT QUẢ ĐÁNH GIÁ</h4>
+                                            </div>
+                                        </div>
+                                        <p className="text-xs text-slate-300 leading-relaxed">{aiFeedback.feedback}</p>
+                                        <div className="p-4 rounded-2xl bg-indigo-950/40 border border-indigo-500/20 space-y-1">
+                                            <span className="text-[10px] font-mono uppercase tracking-widest text-indigo-300 font-bold block">✨ BẢN CHUẨN NATIVE:</span>
+                                            <p className="text-white font-extrabold">"{aiFeedback.polish}"</p>
+                                            <p className="text-slate-400 text-xs italic">{aiFeedback.native_explanation}</p>
+                                        </div>
+                                        <button
+                                            onClick={() => setActiveStep('summary')}
+                                            className="px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-cyan-500 text-slate-950 font-extrabold rounded-xl text-xs w-full"
+                                        >
+                                            Xem kết quả toàn chuỗi DNA
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* STEP 4: SUMMARY & RETENTION GRAPH */}
+                        {activeStep === 'summary' && (
+                            <div className="max-w-xl mx-auto w-full text-center space-y-6">
+                                <div className="bg-gradient-to-tr from-indigo-950/80 via-slate-900 to-slate-900 border border-indigo-500/30 rounded-3xl p-6 sm:p-8 space-y-6 shadow-2xl relative overflow-hidden">
+                                    <div className="w-16 h-16 rounded-full bg-gradient-to-br from-emerald-400 to-cyan-400 text-slate-950 flex items-center justify-center mx-auto shadow-lg">
+                                        <i data-lucide="trophy" class="w-8 h-8"></i>
+                                    </div>
+
+                                    <div className="space-y-1">
+                                        <span className="text-xs font-mono font-bold text-cyan-300 uppercase tracking-widest block">KHÓA LIÊN KẾT THÀNH CÔNG</span>
+                                        <h2 className="text-xl sm:text-2xl font-black text-white">Mã gen từ "{currentWord}" đã khóa!</h2>
+                                        <p className="text-slate-400 text-xs max-w-sm mx-auto leading-relaxed">
+                                            Từ vựng này đã lưu sâu vào vỏ não thông qua chuỗi {wordData.evolution_path.length} cấp độ tiến hóa tăng cường.
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-3 text-left pt-4 border-t border-slate-800">
+                                        <h3 className="text-xs font-bold text-slate-300 tracking-wider uppercase">📊 CHỈ SỐ THẨM THẤU DNA</h3>
+                                        <div className="space-y-2">
+                                            <div className="flex justify-between text-xs">
+                                                <span class="text-slate-400">Hiểu ngữ nghĩa (Comprehension):</span>
+                                                <span className="text-cyan-400 font-mono font-bold">100%</span>
+                                            </div>
+                                            <div className="h-2 bg-slate-950 rounded-full overflow-hidden">
+                                                <div className="bg-cyan-500 h-full w-full" />
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <button
+                                        onClick={() => {
+                                            setActiveStep('setup');
+                                            setSearchInput("");
+                                        }}
+                                        className="px-8 py-3 bg-gradient-to-r from-indigo-600 to-cyan-500 text-slate-950 font-bold rounded-xl w-full text-xs"
+                                    >
+                                        Bắt đầu từ vựng tiếp theo 🚀
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* STEP 5: SPEAKING PRACTICE SCENE */}
+                        {activeStep === 'speaking' && (
+                            <div className="space-y-6 text-left">
+                                <div className="bg-slate-900/60 p-6 rounded-3xl border border-slate-800 space-y-2">
+                                    <span className="text-xs font-mono font-bold text-purple-400 uppercase tracking-widest block">IELTS SPEAKING INTERACTION</span>
+                                    <h2 className="text-xl font-extrabold text-white">Luyện Nói Song Ngữ Phản Xạ</h2>
+                                    <p className="text-xs text-slate-400">Ứng dụng dịch phản xạ song ngữ và bẻ khóa từ mới chuẩn bản xứ.</p>
+                                </div>
+
+                                <div className="bg-slate-900/40 p-5 rounded-2xl border border-slate-855 space-y-4">
+                                    <div className="space-y-2">
+                                        <label className="text-[11px] font-bold text-slate-400 block">Chọn Chủ Đề Luyện Nói:</label>
+                                        <div className="flex flex-wrap gap-2">
+                                            {['Gia đình', 'Sở thích', 'Công việc', 'Khác', 'Random'].map(topic => (
+                                                <button
+                                                    key={topic}
+                                                    onClick={() => {
+                                                        setSpeakingTopic(topic);
+                                                        setIsCustomTopicActive(topic === 'Khác');
+                                                    }}
+                                                    className={`px-4 py-2 rounded-xl text-xs font-bold border transition ${
+                                                        (isCustomTopicActive && topic === 'Khác') || (!isCustomTopicActive && speakingTopic === topic && topic !== 'Khác')
+                                                            ? 'bg-purple-950 text-purple-300 border-purple-500/40' 
+                                                            : 'bg-slate-950 border-slate-855 text-slate-400'
+                                                    }`}
+                                                >
+                                                    {topic}
+                                                </button>
+                                            ))}
+                                        </div>
+
+                                        {isCustomTopicActive && (
+                                            <input 
+                                                type="text"
+                                                value={customSpeakingTopic}
+                                                onChange={(e) => setCustomSpeakingTopic(e.target.value)}
+                                                placeholder="Nhập chủ đề tùy chọn..."
+                                                className="w-full px-3 py-2 mt-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-purple-500"
+                                            />
+                                        )}
+                                    </div>
+
+                                    <div className="flex justify-end pt-2">
+                                        <button
+                                            onClick={generateSpeakingChallenge}
+                                            disabled={isGeneratingSpeaking}
+                                            className="px-6 py-2.5 bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 text-white font-black rounded-xl text-xs transition disabled:opacity-50"
+                                        >
+                                            {isGeneratingSpeaking ? "Đang chuẩn bị..." : "Kích Hoạt Câu Hỏi Speaking AI"}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="bg-slate-900/20 p-6 rounded-3xl border border-slate-800 space-y-6">
+                                    <div className="space-y-2">
+                                        <span className="text-[10px] font-mono font-bold text-purple-400 uppercase tracking-widest block">Câu hỏi hiện tại</span>
+                                        <div className="p-4 bg-slate-950/80 rounded-2xl border border-slate-855 flex items-start justify-between gap-3">
+                                            <h3 className="text-sm sm:text-base font-extrabold text-white">" {speakingQuestion.question_en} "</h3>
+                                            <button 
+                                                onClick={() => speakText(speakingQuestion.question_en)}
+                                                className="p-1.5 bg-slate-900 hover:bg-slate-800 rounded-lg text-slate-300 shrink-0"
+                                            >
+                                                <i data-lucide="volume-2" class="w-4 h-4"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* CEFR CHOICE DROPDOWN AND REC GIVEN DIRECTLY UNDER QUESTION */}
+                                    <div className="p-4 bg-slate-950/60 border border-slate-855 rounded-2xl space-y-3">
+                                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                                            <div className="space-y-1">
+                                                <label className="text-[11px] font-bold text-slate-400 block uppercase tracking-wider">Chọn Trình Độ Đáp Án (CEFR):</label>
+                                                <span className="text-[10px] text-purple-300 font-semibold block">💡 Gợi ý: {getSmartLevelRecommendation()}</span>
+                                            </div>
+                                            <div className="grid grid-cols-6 gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800">
+                                                {['A1', 'A2', 'B1', 'B2', 'C1', 'C2'].map(lvl => (
+                                                    <button
+                                                        key={lvl}
+                                                        onClick={() => setSpeakingLevel(lvl)}
+                                                        className={`py-1 px-2 rounded text-center text-xs font-black transition ${
+                                                            speakingLevel === lvl ? 'bg-purple-600 text-white' : 'text-slate-400'
+                                                        }`}
+                                                    >
+                                                        {lvl}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="flex justify-end pt-1">
+                                            <button
+                                                onClick={loadSpeakingModelAnswer}
+                                                disabled={isGeneratingModelAnswer}
+                                                className="px-5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-xs font-bold rounded-lg transition"
+                                            >
+                                                {isGeneratingModelAnswer ? "Đang chuẩn bị..." : `Tải Đáp Án Mẫu Level ${speakingLevel}`}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {isModelAnswerLoaded && speakingQuestion.model_vi && (
+                                        <div className="p-4 bg-indigo-950/20 rounded-2xl border border-indigo-900/30 space-y-1.5">
+                                            <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider block">ĐÁP ÁN MẪU TIẾNG VIỆT (Trình độ {speakingLevel}):</span>
+                                            <p className="text-xs sm:text-sm text-slate-200 font-extrabold">“ {speakingQuestion.model_vi} ”</p>
+                                        </div>
+                                    )}
+
+                                    {isModelAnswerLoaded && speakingQuestion.model_vi && (
+                                        <div className="space-y-2">
+                                            <label className="text-[11px] font-bold text-slate-400 block uppercase tracking-wider">Nhập câu trả lời bằng tiếng Anh của bạn:</label>
+                                            <textarea
+                                                rows={2}
+                                                value={speakingUserAnswer}
+                                                onChange={(e) => {
+                                                    setSpeakingUserAnswer(e.target.value);
+                                                    if (speakingStatus === 'incorrect') setSpeakingStatus('unsolved');
+                                                }}
+                                                placeholder="Dịch câu trả lời mẫu sang tiếng Anh..."
+                                                className={`w-full p-3 bg-slate-950 border rounded-xl text-xs sm:text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/25 transition ${
+                                                    speakingStatus === 'correct' ? 'border-emerald-500/60' : speakingStatus === 'incorrect' ? 'border-rose-500/60' : 'border-slate-855'
+                                                }`}
+                                            />
+                                            
+                                            <div className="flex justify-between items-center">
+                                                <button
+                                                    onClick={() => setSpeakingUserAnswer(speakingQuestion.model_en)}
+                                                    className="text-[11px] text-indigo-400 font-bold underline"
+                                                >
+                                                    Xem câu mẫu của giám khảo
+                                                </button>
+                                                <div className="flex items-center gap-2">
+                                                    {speakingStatus !== 'correct' ? (
+                                                        <button
+                                                            disabled={!speakingUserAnswer.trim() || speakingStatus === 'checking'}
+                                                            onClick={checkSpeakingAnswer}
+                                                            className="px-5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-xs font-extrabold rounded-lg"
+                                                        >
+                                                            {speakingStatus === 'checking' ? 'Đang chấm...' : 'Kiểm Tra Phản Xạ'}
+                                                        </button>
+                                                    ) : (
+                                                        <button
+                                                            onClick={generateSpeakingChallenge}
+                                                            className="px-5 py-2 bg-gradient-to-r from-emerald-500 to-cyan-400 text-slate-950 text-xs font-black rounded-lg"
+                                                        >
+                                                            Luyện Bài Mới →
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {speakingFeedback && (
+                                        <div className="p-4 rounded-2xl border bg-slate-900 border-slate-800 space-y-2">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-[10px] font-mono tracking-widest text-slate-400 font-bold uppercase">Nhận xét Giám khảo</span>
+                                                {speakingStatus === 'correct' && (
+                                                    <button 
+                                                        onClick={() => speakText(speakingQuestion.model_en)}
+                                                        className="px-2 py-1 bg-slate-900 rounded border border-slate-855 text-cyan-300 font-bold text-[10px] flex items-center gap-1"
+                                                    >
+                                                        <i data-lucide="volume-2" class="w-3.5 h-3.5"></i>
+                                                        Luyện Nói Mẫu
+                                                    </button>
+                                                )}
+                                            </div>
+                                            <p className="text-xs leading-relaxed">{speakingFeedback}</p>
+                                        </div>
+                                    )}
+
+                                    {/* DISCOVERED NEW WORDS LIST */}
+                                    {speakingQuestion.discovered_words && speakingQuestion.discovered_words.length > 0 && (
+                                        <div className="pt-3 border-t border-slate-855 space-y-2">
+                                            <span className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest block">Từ mới phát hiện</span>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                {speakingQuestion.discovered_words.map((item, idx) => {
+                                                    const wordInLibrary = library.some(lib => lib.word === item.word.toLowerCase());
+                                                    return (
+                                                        <div key={idx} className="p-3 bg-slate-950 border border-slate-850 rounded-xl flex items-center justify-between gap-3">
+                                                            <div className="space-y-0.5">
+                                                                <strong className="text-xs text-purple-300 capitalize">{item.word}</strong>
+                                                                <p className="text-[11px] text-slate-400">{item.meaning}</p>
+                                                            </div>
+                                                            {wordInLibrary ? (
+                                                                <span className="text-[10px] text-emerald-400 font-bold whitespace-nowrap">Đã lưu</span>
+                                                            ) : (
+                                                                <button
+                                                                    onClick={() => handleOpenWordVerification(item.word)}
+                                                                    className="px-2 py-1 bg-purple-950/40 text-[10px] font-bold text-purple-300 rounded border border-purple-900/50 whitespace-nowrap"
+                                                                >
+                                                                    + Lưu thư viện 🧬
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* STEP 6: VOCABULARY LIBRARY */}
+                        {activeStep === 'library' && (
+                            <div className="space-y-6 text-left">
+                                <div className="bg-slate-900/60 p-6 rounded-3xl border border-slate-800 space-y-2">
+                                    <span className="text-xs font-mono font-bold text-indigo-400 uppercase tracking-widest block">DNA LIBRARY CONTAINER</span>
+                                    <h2 className="text-xl font-extrabold text-white">Thư Viện Từ Vựng Đã Lưu</h2>
+                                    <p className="text-xs text-slate-400">Lưu trữ tất cả các từ vựng bạn đã bôi đen hoặc tích lũy được trong các bài học phản xạ.</p>
+                                </div>
+
+                                <div className="bg-slate-900/40 p-6 rounded-3xl border border-slate-800 space-y-6">
+                                    {library.length === 0 ? (
+                                        <div className="text-center py-10 text-slate-500 text-xs">Thư viện rỗng. Hãy bôi đen một từ để thêm.</div>
+                                    ) : (
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                                            {library.map((item) => (
+                                                <div key={item.word} className="p-4 bg-slate-950 border border-slate-855 rounded-2xl flex items-center justify-between">
+                                                    <div className="space-y-1">
+                                                        <span className="text-xs font-black text-white capitalize">{item.word}</span>
+                                                        <div className="flex items-center gap-1.5">
+                                                            <button 
+                                                                onClick={() => {
+                                                                    setCurrentWord(item.word);
+                                                                    decodeNewWordDNA(item.word);
+                                                                }}
+                                                                className="text-[10px] text-indigo-400 font-bold underline"
+                                                            >
+                                                                Học DNA 🧬
+                                                            </button>
+                                                            <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-850 text-[9px] font-bold text-cyan-400 font-mono">
+                                                                Đã học: {item.studyCount || 0} lần
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                    <button 
+                                                        onClick={() => removeFromLibrary(item.word)}
+                                                        className="p-1.5 bg-slate-900 hover:bg-rose-950/40 text-slate-500 hover:text-rose-400 rounded-lg transition"
+                                                    >
+                                                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* STEP 7: AI READING SCENE */}
+                        {activeStep === 'reading' && (
+                            <div className="space-y-6 text-left">
+                                <div className="bg-slate-900/60 p-6 rounded-3xl border border-slate-800 space-y-2">
+                                    <span className="text-xs font-mono font-bold text-cyan-400 uppercase tracking-widest block">AI READING COMPOSER</span>
+                                    <h2 className="text-xl font-extrabold text-white">Luyện Đọc AI Tích Hợp</h2>
+                                    <p className="text-xs text-slate-400">Tạo câu chuyện ngắn lồng ghép linh hoạt các từ vựng đã lưu trong Thư viện.</p>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                    <div className="md:col-span-1 bg-slate-900/40 p-5 rounded-3xl border border-slate-800 space-y-5">
+                                        <h3 className="text-xs font-black text-white uppercase border-b border-slate-800 pb-2">Cấu hình bài đọc</h3>
+                                        <div className="space-y-2">
+                                            <label className="text-[11px] font-bold text-slate-400 block">Số lượng chữ:</label>
+                                            <select 
+                                                value={readingLength} 
+                                                onChange={(e) => setReadingLength(e.target.value)}
+                                                className="w-full bg-slate-950 border border-slate-855 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                                            >
+                                                <option value={100}>~ 100 chữ</option>
+                                                <option value={150}>~ 150 chữ</option>
+                                                <option value={250}>~ 250 chữ</option>
+                                            </select>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <label className="text-[11px] font-bold text-slate-400 block">Chủ đề:</label>
+                                            <input 
+                                                type="text" 
+                                                value={readingTheme} 
+                                                onChange={(e) => setReadingTheme(e.target.value)}
+                                                placeholder="Ví dụ: Công nghệ, đời sống..."
+                                                className="w-full bg-slate-950 border border-slate-855 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                                            />
+                                        </div>
+
+                                        <button
+                                            onClick={generateAiReadingPassage}
+                                            disabled={isGeneratingReading}
+                                            className="w-full py-3 bg-gradient-to-r from-cyan-500 to-indigo-600 text-slate-950 font-black rounded-xl text-xs transition disabled:opacity-50"
+                                        >
+                                            {isGeneratingReading ? "Đang chuẩn bị..." : "Tạo Bài Đọc AI"}
+                                        </button>
+                                    </div>
+
+                                    <div className="md:col-span-2 bg-slate-900/20 p-5 rounded-3xl border border-slate-800 min-h-[300px] flex flex-col justify-start relative">
+                                        {readingPassage ? (
+                                            <div className="space-y-5">
+                                                <div className="border-b border-slate-800 pb-3 flex justify-between items-center">
+                                                    <h3 className="text-base sm:text-lg font-extrabold text-white">{readingPassage.title}</h3>
+                                                    <button 
+                                                        onClick={() => speakText(readingPassage.passage)}
+                                                        className="p-2 bg-slate-900 hover:bg-slate-800 rounded-xl text-cyan-300"
+                                                    >
+                                                        <i data-lucide="volume-2" class="w-4 h-4"></i>
+                                                    </button>
+                                                </div>
+
+                                                <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-855 text-xs sm:text-sm leading-relaxed">
+                                                    <p>{readingPassage.passage}</p>
+                                                </div>
+
+                                                <div className="p-4 border-l-2 border-slate-800 text-xs italic text-slate-400">
+                                                    <p>{readingPassage.translation}</p>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-slate-500 text-xs">
+                                                Sẵn sàng sáng tạo bài đọc bằng AI dựa trên Thư viện.
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                    </main>
+
+                    <footer className="border-t border-slate-900 py-6 bg-slate-950 text-center text-slate-600 text-xs">
+                        <div className="max-w-5xl mx-auto px-4 space-y-1">
+                            <p>© 2026 DNA Vocabulary Engine. Đã tích hợp giải trình cấu trúc nâng cao bằng Gemini.</p>
+                            <p class="text-slate-700 font-medium">Bôi đen bất kỳ từ vựng nào trên trang để tự động chuẩn hóa và lưu nhanh vào Thư viện.</p>
+                        </div>
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('app'));
+        root.render(<App />);
+
+        // Syncing Lucide Icons on Mount
+        setTimeout(() => {
+            if (window.lucide) {
+                window.lucide.createIcons();
+            }
+        }, 800);
+    </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# Secrets
+.env
+backend/.env
+*.env
+!.env.example
+!backend/.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+.vscode/
