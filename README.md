@@ -78,4 +78,4 @@ _Coming soon._
 
 ## Screenshots
 
-_Coming soon._
+![Homepage — Vocabulary DNA decoder](screenshots/homepage.png)
