@@ -412,6 +412,136 @@ Hãy trả về JSON:
     return jsonify(result)
 
 
+# ---------------------------------------------------------------------------
+# Tra từ điển (định nghĩa + phát âm IPA + audio UK/US) cho màn hình Library
+# ---------------------------------------------------------------------------
+
+DICTIONARY_API_URL = "https://api.dictionaryapi.dev/api/v2/entries/en/"
+
+DEFINE_FALLBACK_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "part_of_speech": {"type": "STRING"},
+        "phonetic": {"type": "STRING"},
+        "definition": {"type": "STRING"},
+        "definition_vi": {"type": "STRING"},
+    },
+    "required": ["part_of_speech", "phonetic", "definition", "definition_vi"],
+}
+
+DEFINE_VI_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {"definition_vi": {"type": "STRING"}},
+    "required": ["definition_vi"],
+}
+
+
+def _translate_vi(word, definition_en):
+    """Dịch định nghĩa tiếng Anh sang tiếng Việt (nếu lỗi thì trả về rỗng)."""
+    if not definition_en:
+        return ""
+    system_prompt = """Bạn là từ điển Anh-Việt.
+Hãy dịch định nghĩa tiếng Anh sang tiếng Việt tự nhiên, ngắn gọn, dễ hiểu cho người học."""
+    user_query = (
+        f'Từ: "{word}"\n'
+        f'Định nghĩa tiếng Anh: "{definition_en}"\n'
+        "Dịch định nghĩa này sang tiếng Việt."
+    )
+    try:
+        result = call_gemini(system_prompt, user_query, DEFINE_VI_SCHEMA)
+        return result.get("definition_vi", "")
+    except ApiError:
+        return ""
+
+
+def _pick_phonetics(entry):
+    """Tách IPA + audio UK/US từ danh sách phonetics của Free Dictionary API."""
+    phonetic_uk = phonetic_us = ""
+    audio_uk = audio_us = ""
+    generic_text = entry.get("phonetic") or ""
+    for p in entry.get("phonetics", []):
+        audio = p.get("audio") or ""
+        text = p.get("text") or ""
+        if audio.endswith("-uk.mp3"):
+            audio_uk = audio
+            phonetic_uk = text or phonetic_uk
+        elif audio.endswith("-us.mp3"):
+            audio_us = audio
+            phonetic_us = text or phonetic_us
+        elif text and not generic_text:
+            generic_text = text
+    phonetic_uk = phonetic_uk or generic_text
+    phonetic_us = phonetic_us or generic_text
+    return phonetic_uk, phonetic_us, audio_uk, audio_us
+
+
+@app.post("/api/define")
+def define_word():
+    body = get_json_body()
+    require_fields(body, ["word"])
+    word = body["word"].strip().lower()
+
+    # 1) Ưu tiên Free Dictionary API: có audio UK/US thật + IPA + định nghĩa.
+    try:
+        resp = requests.get(
+            DICTIONARY_API_URL + requests.utils.quote(word), timeout=15
+        )
+    except requests.exceptions.RequestException:
+        resp = None
+
+    if resp is not None and resp.status_code == 200:
+        try:
+            entry = resp.json()[0]
+            part_of_speech = ""
+            definition = ""
+            for meaning in entry.get("meanings", []):
+                defs = meaning.get("definitions", [])
+                if defs:
+                    part_of_speech = meaning.get("partOfSpeech", "")
+                    definition = defs[0].get("definition", "")
+                    break
+            phonetic_uk, phonetic_us, audio_uk, audio_us = _pick_phonetics(entry)
+            return jsonify(
+                {
+                    "word": entry.get("word", word),
+                    "part_of_speech": part_of_speech,
+                    "phonetic_uk": phonetic_uk,
+                    "phonetic_us": phonetic_us,
+                    "audio_uk": audio_uk,
+                    "audio_us": audio_us,
+                    "definition": definition,
+                    "definition_vi": _translate_vi(word, definition),
+                    "source": "dictionary",
+                }
+            )
+        except (ValueError, IndexError, KeyError, TypeError):
+            pass  # Rơi xuống fallback AI bên dưới.
+
+    # 2) Fallback: Gemini sinh định nghĩa + IPA (không có audio -> frontend dùng TTS).
+    system_prompt = """Bạn là từ điển Anh-Anh súc tích.
+Với từ tiếng Anh được cung cấp, hãy trả về JSON gồm:
+- part_of_speech: loại từ (noun, verb, adjective, adverb...)
+- phonetic: phiên âm IPA đặt trong dấu /.../
+- definition: một định nghĩa ngắn gọn bằng tiếng Anh
+- definition_vi: bản dịch tiếng Việt của định nghĩa đó, tự nhiên và dễ hiểu."""
+
+    user_query = f'Định nghĩa từ tiếng Anh: "{word}"'
+    result = call_gemini(system_prompt, user_query, DEFINE_FALLBACK_SCHEMA)
+    return jsonify(
+        {
+            "word": word,
+            "part_of_speech": result.get("part_of_speech", ""),
+            "phonetic_uk": result.get("phonetic", ""),
+            "phonetic_us": result.get("phonetic", ""),
+            "audio_uk": "",
+            "audio_us": "",
+            "definition": result.get("definition", ""),
+            "definition_vi": result.get("definition_vi", ""),
+            "source": "ai",
+        }
+    )
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="127.0.0.1", port=port, debug=True)
